@@ -35,13 +35,14 @@ time_start = time.time()
 gnuplot_cmd = 'gnuplot'
 if 'GNUPLOT' in os.environ:
 	gnuplot_cmd = os.environ['GNUPLOT']
-
+#filter_authors ,split with ','
 conf = {
 	'max_domains': 10,
 	'max_ext_length': 10,
 	'style': 'gitstats.css',
 	'max_authors': 20,
 	'authors_top': 5,
+	'filter_authors':'',
 	'commit_begin': '',
 	'commit_end': 'HEAD',
 	'linear_linestats': 1,
@@ -84,6 +85,16 @@ def getcommitrange(defaultrange = 'HEAD', end_only = False):
 			return conf['commit_end']
 		return '%s..%s' % (conf['commit_begin'], conf['commit_end'])
 	return defaultrange
+
+def getFilterAuthorList():
+	if len(conf['filter_authors']) > 0:
+		authors = conf['filter_authors'].split(',')
+		authorsList = []
+		for author in authors:
+			authorsList.append(author.rstrip())
+		return authorsList
+	else:
+		return []
 
 def getkeyssortedbyvalues(dict):
 	return map(lambda el : el[1], sorted(map(lambda el : (el[1], el[0]), dict.items())))
@@ -285,8 +296,20 @@ class DataCollector:
 class GitDataCollector(DataCollector):
 	def collect(self, dir):
 		DataCollector.collect(self, dir)
-
-		self.total_authors += int(getpipeoutput(['git shortlog -s %s' % getlogrange(), 'wc -l']))
+		filter_author_list = getFilterAuthorList()
+		lines = getpipeoutput(['git shortlog -s %s' % getlogrange()]).split('\n')
+		print("lines === %s" % lines)
+		total_authors = 0
+		if len(filter_author_list) == 0:
+			total_authors = len(lines)
+		else:
+			for line in lines:
+				if len(line) == 0:
+					continue
+				(num, author) = line.split('\t')
+				if author.rstrip() not in filter_author_list:
+					total_authors +=1
+		self.total_authors += total_authors
 		#self.total_lines = int(getoutput('git-ls-files -z |xargs -0 cat |wc -l'))
 
 		# tags
@@ -306,7 +329,6 @@ class GitDataCollector(DataCollector):
 				except ValueError:
 					stamp = 0
 				self.tags[tag] = { 'stamp': stamp, 'hash' : hash, 'date' : datetime.datetime.fromtimestamp(stamp).strftime('%Y-%m-%d'), 'commits': 0, 'authors': {} }
-
 		# collect info on tags, starting from latest
 		tags_sorted_by_date_desc = map(lambda el : el[1], reversed(sorted(map(lambda el : (el[1]['date'], el[0]), self.tags.items()))))
 		prev = None
@@ -322,22 +344,27 @@ class GitDataCollector(DataCollector):
 				parts = re.split('\s+', line, 2)
 				commits = int(parts[1])
 				author = parts[2]
+				author = author.rstrip()
+				if author in filter_author_list:
+					continue
 				self.tags[tag]['commits'] += commits
 				self.tags[tag]['authors'][author] = commits
 
 		# Collect revision statistics
 		# Outputs "<stamp> <date> <time> <timezone> <author> '<' <mail> '>'"
-		lines = getpipeoutput(['git rev-list --pretty=format:"%%at %%ai %%aN <%%aE>" %s' % getlogrange('HEAD'), 'grep -v ^commit']).split('\n')
+		cmd1 = 'git rev-list --pretty=format:"%%at %%ai %%aN <%%aE>" %s' % getlogrange('HEAD')
+		lines = getpipeoutput([cmd1,'grep -v ^commit']).split('\n')
 		for line in lines:
 			parts = line.split(' ', 4)
-			author = ''
+			author, mail = parts[4].split('<', 1)
+			author = author.rstrip()
+			if author in filter_author_list:
+				continue
 			try:
 				stamp = int(parts[0])
 			except ValueError:
 				stamp = 0
 			timezone = parts[3]
-			author, mail = parts[4].split('<', 1)
-			author = author.rstrip()
 			mail = mail.rstrip('>')
 			domain = '?'
 			if mail.find('@') != -1:
@@ -434,14 +461,18 @@ class GitDataCollector(DataCollector):
 			self.commits_by_timezone[timezone] = self.commits_by_timezone.get(timezone, 0) + 1
 
 		# outputs "<stamp> <files>" for each revision
-		revlines = getpipeoutput(['git rev-list --pretty=format:"%%at %%T" %s' % getlogrange('HEAD'), 'grep -v ^commit']).strip().split('\n')
+		cmd2 = 'git rev-list --pretty=format:"%%at %%T %%aN" %s' % getlogrange('HEAD')
+		revlines = getpipeoutput([cmd2, 'grep -v ^commit']).strip().split('\n')
 		lines = []
 		revs_to_read = []
 		time_rev_count = []
 		#Look up rev in cache and take info from cache if found
 		#If not append rev to list of rev to read from repo
 		for revline in revlines:
-			time, rev = revline.split(' ')
+			time, rev, author = revline.split(' ')
+			author = author.rstrip()
+			if author in filter_author_list:
+				continue
 			#if cache empty then add time and rev to list of new rev's
 			#otherwise try to read needed info from cache
 			if 'files_in_tree' not in self.cache.keys():
@@ -598,14 +629,17 @@ class GitDataCollector(DataCollector):
 		for line in lines:
 			if len(line) == 0:
 				continue
-
+			
 			# <stamp> <author>
 			if re.search('files? changed', line) == None:
 				pos = line.find(' ')
 				if pos != -1:
 					try:
-						oldstamp = stamp
 						(stamp, author) = (int(line[:pos]), line[pos+1:])
+						author = author.rstrip()
+						if author in filter_author_list:
+							continue
+						oldstamp = stamp
 						if oldstamp > stamp:
 							# clock skew, keep old timestamp to avoid having ugly graph
 							stamp = oldstamp
@@ -1488,4 +1522,4 @@ class GitStats:
 if __name__=='__main__':
 	g = GitStats()
 	g.run(sys.argv[1:])
-
+	
